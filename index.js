@@ -16,13 +16,25 @@ const MIME = {
 };
 
 const httpServer = http.createServer((req, res) => {
-  let filePath = req.url === '/' ? '/client.html' : req.url;
+  const urlPath = req.url.split('?')[0];
+
+  let filePath = urlPath === '/' ? '/client.html' : urlPath;
   filePath = path.join(__dirname, filePath);
+
   const ext = path.extname(filePath);
+
   fs.readFile(filePath, (err, data) => {
-    if (err) { res.writeHead(404); res.end('Not found'); return; }
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain',
-                          'Access-Control-Allow-Origin': '*' });
+    if (err) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'text/plain',
+      'Access-Control-Allow-Origin': '*'
+    });
+
     res.end(data);
   });
 });
