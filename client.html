@@ -24,8 +24,8 @@
   --green:#1A4A1A; --green2:#2A8A2A;
   --bg:#060200; --panel:#100600; --panel2:#180A00;
   --zone-bg:rgba(12,5,0,.9);
-  --sz:clamp(72px,12vw,100px); /* zone size */
-  --tsz:clamp(24px,4vw,32px);  /* token size */
+  --sz:clamp(64px,14vmin,98px);  /* zone size - vmin works portrait+landscape */
+  --tsz:clamp(22px,5vmin,30px); /* token size */
 }
 
 /* Reset */
@@ -142,11 +142,30 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
 @keyframes speaking{0%,100%{transform:scale(1);background:#2A8A2A}50%{transform:scale(1.4);background:#4ACA4A}}
 
 /* ══════════ BODY LAYOUT ══════════ */
-.gbody{flex:1;display:grid;grid-template-columns:1fr 265px;overflow:hidden;}
-@media(max-width:700px){.gbody{grid-template-columns:1fr;}.sidebar{display:none!important;}}
+.gbody{flex:1;display:grid;grid-template-columns:1fr 265px;overflow:hidden;position:relative;}
+@media(max-width:700px){
+  .gbody{grid-template-columns:1fr;}
+  .sidebar{
+    position:fixed;bottom:0;left:0;right:0;z-index:50;
+    height:auto;max-height:50vh;
+    background:rgba(10,4,0,.97);border-top:1px solid rgba(200,160,48,.2);
+    transform:translateY(100%);transition:transform .3s ease;
+    overflow-y:auto;
+  }
+  .sidebar.open{transform:translateY(0);}
+  .g-head{padding:4px 8px;gap:6px;min-height:38px;font-size:90%;}
+  .glogo{font-size:14px;}
+  .rnl,.cdot+span{display:none;}
+  .me-pill{padding:2px 7px;}
+}
 
 /* ══════════ BOARD ══════════ */
 .board-wrap{position:relative;overflow:hidden;}
+/* Mobile: board needs touch-based panning */
+@media(max-width:700px){
+  .board-wrap{overflow:auto;-webkit-overflow-scrolling:touch;}
+  #board{min-width:360px;min-height:420px;}
+}
 #board-canvas{position:absolute;inset:0;pointer-events:none;}
 #board{position:absolute;inset:0;}
 
@@ -275,7 +294,11 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
 .chat-send{padding:4px 8px;font-family:'Cinzel',serif;font-size:7px;letter-spacing:1px;background:rgba(200,160,48,.1);border:1px solid rgba(200,160,48,.2);border-radius:2px;color:var(--gold2);cursor:pointer;}
 
 /* ══════════ CONTROLS BAR ══════════ */
-.cbar{background:var(--panel2);border-top:1px solid rgba(200,160,48,.08);padding:7px 12px;display:flex;align-items:center;gap:7px;flex-shrink:0;flex-wrap:wrap;z-index:15;min-height:46px;}
+.cbar{background:var(--panel2);border-top:1px solid rgba(200,160,48,.08);padding:7px 12px;display:flex;align-items:center;gap:7px;flex-shrink:0;flex-wrap:wrap;z-index:40;min-height:46px;}
+@media(max-width:700px){
+  .cbar{position:sticky;bottom:0;left:0;right:0;min-height:52px;padding:8px 10px;gap:6px;}
+  .cb{padding:8px 10px;font-size:7.5px;}
+}
 .clbl{font-family:'Cinzel',serif;font-size:8.5px;letter-spacing:2px;text-transform:uppercase;color:rgba(200,160,48,.32);flex:1;min-width:0;}
 .cb{padding:6px 14px;font-family:'Cinzel',serif;font-size:8px;letter-spacing:2.5px;text-transform:uppercase;border-radius:3px;cursor:pointer;border:1px solid;transition:all .2s;user-select:none;white-space:nowrap;position:relative;overflow:hidden;}
 .cb.red{background:linear-gradient(135deg,var(--blood),var(--blood2));border-color:var(--blood);color:var(--parch);box-shadow:0 2px 10px rgba(110,0,0,.3);}
@@ -477,7 +500,11 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
       <div class="sb" style="padding:4px 8px;border-bottom:none;flex-shrink:0;"><div class="logwrap" id="logwrap"></div></div>
     </div>
   </div>
-  <div class="cbar" id="cbar"><span class="clbl" id="cctx">—</span></div>
+  <div class="cbar" id="cbar">
+    <span class="clbl" id="cctx">—</span>
+    <!-- Mobile only: sidebar toggle -->
+    <button class="cb gold" id="sidebar-toggle" style="display:none;" onclick="document.querySelector('.sidebar').classList.toggle('open')">📋 Info</button>
+  </div>
 </div>
 
 <!-- ══════════ MODALS ══════════ -->
@@ -836,31 +863,78 @@ function animateParticles() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// VOICE CHAT (WebRTC via Socket.io signaling)
+// VOICE CHAT — WebRTC with TURN (works on mobile + all networks)
 // ═══════════════════════════════════════════════════════════════
 let localStream = null, voiceActive = false, voiceMuted = false;
-const peerConns = {}; // peerId → RTCPeerConnection
-const voicePeers = {}; // peerId → { name, speaking }
-let analyserNode = null;
+const peerConns  = {};  // peerId → RTCPeerConnection
+const voicePeers = {};  // peerId → { name, speaking }
+let myAnalyser   = null;
+
+// ICE config: multiple STUN + free TURN via Open Relay Project
+// TURN is required for mobile carrier networks (symmetric NAT)
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // Free TURN — Open Relay Project (public, no signup)
+    { urls: 'turn:openrelay.metered.ca:80',               username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443',              username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp',username: 'openrelayproject', credential: 'openrelayproject' },
+  ],
+  iceCandidatePoolSize: 10,
+};
+
+function makePeer(peerId) {
+  const pc = new RTCPeerConnection(ICE_CONFIG);
+  peerConns[peerId] = pc;
+  // Add local tracks
+  if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  // Relay ICE candidates
+  pc.onicecandidate = e => {
+    if (e.candidate) socket.emit('voice_signal', { to: peerId, signal: { type: 'candidate', candidate: e.candidate } });
+  };
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'failed') pc.restartIce();
+  };
+  // Receive remote audio
+  pc.ontrack = e => {
+    if (e.streams && e.streams[0]) attachRemoteAudio(peerId, e.streams[0]);
+  };
+  return pc;
+}
 
 async function startVoice() {
+  if (voiceActive) { toggleMute(); return; }
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    // Resume AudioContext — required after user gesture on iOS/Android
+    if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
+
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
+      video: false,
+    });
     voiceActive = true;
     document.getElementById('voice-btn').classList.add('active');
     document.getElementById('voice-lbl').textContent = 'Activo';
+
+    // Speaking detection for my own mic
+    setupSpeakingDetection(localStream, (speaking) => {
+      document.querySelectorAll('.tok.mine').forEach(t => t.classList.toggle('speaking-ring', speaking));
+    });
+
+    // Tell other players I joined voice
     socket.emit('voice_join');
-
-    // Set up analyser for speaking detection
-    const ctx = getAudioCtx();
-    const src = ctx.createMediaStreamSource(localStream);
-    analyserNode = ctx.createAnalyser(); analyserNode.fftSize = 512;
-    src.connect(analyserNode);
-    detectSpeaking();
-
     toast('🎙️ Micrófono activo. ¡Puedes hablar!');
-  } catch(e) {
-    toast('No se pudo acceder al micrófono: ' + e.message, 'err');
+  } catch (e) {
+    const msg = e.name === 'NotAllowedError'
+      ? 'Permiso de micrófono denegado. Ve a Ajustes → Privacidad → Micrófono.'
+      : e.name === 'NotFoundError'
+      ? 'No se encontró un micrófono.'
+      : 'Error de micrófono: ' + e.message;
+    toast(msg, 'err', 6000);
   }
 }
 
@@ -868,110 +942,113 @@ function toggleMute() {
   if (!localStream) return;
   voiceMuted = !voiceMuted;
   localStream.getAudioTracks().forEach(t => t.enabled = !voiceMuted);
-  const btn = document.getElementById('voice-btn');
-  btn.classList.toggle('muted', voiceMuted);
-  document.getElementById('voice-lbl').textContent = voiceMuted ? 'Silenciado' : 'Activo';
+  document.getElementById('voice-btn').classList.toggle('muted', voiceMuted);
+  document.getElementById('voice-lbl').textContent = voiceMuted ? '🔇 Silenciado' : '🎙️ Activo';
+  toast(voiceMuted ? 'Micrófono silenciado' : 'Micrófono activo');
 }
 
-function detectSpeaking() {
-  if (!analyserNode) return;
-  const data = new Uint8Array(analyserNode.frequencyBinCount);
-  let isSpeaking = false;
-  const check = () => {
-    analyserNode.getByteFrequencyData(data);
-    const avg = data.reduce((a,b)=>a+b,0)/data.length;
-    const nowSpeaking = avg > 20;
-    if (nowSpeaking !== isSpeaking) {
-      isSpeaking = nowSpeaking;
-      // Highlight my token
-      document.querySelectorAll('.tok.mine').forEach(t => t.classList.toggle('speaking-ring', isSpeaking));
-    }
-    requestAnimationFrame(check);
-  };
-  check();
+function setupSpeakingDetection(stream, callback) {
+  try {
+    const ctx = getAudioCtx();
+    const src = ctx.createMediaStreamSource(stream);
+    const an  = ctx.createAnalyser(); an.fftSize = 256;
+    src.connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    let speaking = false;
+    const check = () => {
+      an.getByteFrequencyData(buf);
+      const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
+      const now = avg > 18;
+      if (now !== speaking) { speaking = now; callback(now); }
+      requestAnimationFrame(check);
+    };
+    check();
+  } catch (e) {}
 }
 
-function voiceHandlePeerJoined(peerId) {
+function attachRemoteAudio(peerId, stream) {
+  // Remove old element
+  document.getElementById('audio-' + peerId)?.remove();
+  const audio = document.createElement('audio');
+  audio.id = 'audio-' + peerId;
+  audio.autoplay = true;
+  audio.playsInline = true;  // Required for iOS
+  audio.srcObject = stream;
+  // iOS workaround: must call play() explicitly after user gesture
+  const playAudio = () => { audio.play().catch(() => {}); document.removeEventListener('touchstart', playAudio); };
+  audio.play().catch(() => document.addEventListener('touchstart', playAudio, { once: true }));
+  document.body.appendChild(audio);
+  // Speaking indicator for remote peer
+  setupSpeakingDetection(stream, (speaking) => {
+    if (voicePeers[peerId]) voicePeers[peerId].speaking = speaking;
+    document.querySelectorAll(`[data-voice="${peerId}"]`).forEach(d => d.classList.toggle('speaking', speaking));
+    document.querySelectorAll(`.tok[data-pid="${peerId}"]`).forEach(t => t.classList.toggle('speaking-ring', speaking));
+    renderVoicePeers();
+  });
+}
+
+async function voiceHandlePeerJoined(peerId) {
   if (peerId === socket.id || peerConns[peerId]) return;
-  const pc = new RTCPeerConnection({ iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}] });
-  peerConns[peerId] = pc;
-  if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-  pc.ontrack = e => addRemoteAudio(peerId, e.streams[0]);
-  pc.onicecandidate = e => { if(e.candidate) socket.emit('voice_signal',{to:peerId,signal:{type:'candidate',candidate:e.candidate}}); };
-  pc.createOffer().then(sdp => { pc.setLocalDescription(sdp); socket.emit('voice_signal',{to:peerId,signal:{type:'offer',sdp:sdp.sdp}}); });
-  const gp = G?.players.find(p=>p.id===peerId);
-  voicePeers[peerId] = { name: gp?.name || 'Jugador' };
+  if (!voiceActive) return; // Only connect if I'm in voice
+  const pc = makePeer(peerId);
+  const gp = G?.players.find(p => p.id === peerId);
+  voicePeers[peerId] = { name: gp?.name || 'Jugador', speaking: false };
+  try {
+    const offer = await pc.createOffer({ offerToReceiveAudio: true });
+    await pc.setLocalDescription(offer);
+    socket.emit('voice_signal', { to: peerId, signal: { type: 'offer', sdp: pc.localDescription.sdp } });
+  } catch (e) { console.warn('voice offer error', e); }
   renderVoicePeers();
 }
 
 function voiceHandlePeerLeft(peerId) {
-  if (peerConns[peerId]) { peerConns[peerId].close(); delete peerConns[peerId]; }
+  if (peerConns[peerId]) { try { peerConns[peerId].close(); } catch(e){} delete peerConns[peerId]; }
   delete voicePeers[peerId];
   document.getElementById('audio-' + peerId)?.remove();
   renderVoicePeers();
 }
 
 async function voiceHandleSignal(from, signal) {
-  if (!localStream && signal.type === 'offer') await startVoice().catch(()=>{});
+  // Auto-join voice if we receive an offer (peer is already in voice)
+  if (signal.type === 'offer' && !voiceActive) {
+    await startVoice().catch(() => {});
+  }
   let pc = peerConns[from];
   if (!pc) {
-    pc = new RTCPeerConnection({ iceServers:[{urls:'stun:stun.l.google.com:19302'}] });
-    peerConns[from] = pc;
-    if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-    pc.ontrack = e => addRemoteAudio(from, e.streams[0]);
-    pc.onicecandidate = e => { if(e.candidate) socket.emit('voice_signal',{to:from,signal:{type:'candidate',candidate:e.candidate}}); };
-    const gp = G?.players.find(p=>p.id===from);
-    voicePeers[from] = { name: gp?.name || 'Jugador' };
+    pc = makePeer(from);
+    const gp = G?.players.find(p => p.id === from);
+    voicePeers[from] = { name: gp?.name || 'Jugador', speaking: false };
   }
-  if (signal.type === 'offer') {
-    await pc.setRemoteDescription({ type:'offer', sdp:signal.sdp });
-    const ans = await pc.createAnswer();
-    await pc.setLocalDescription(ans);
-    socket.emit('voice_signal',{to:from,signal:{type:'answer',sdp:ans.sdp}});
-  } else if (signal.type === 'answer') {
-    await pc.setRemoteDescription({ type:'answer', sdp:signal.sdp });
-  } else if (signal.type === 'candidate') {
-    await pc.addIceCandidate(signal.candidate).catch(()=>{});
-  }
+  try {
+    if (signal.type === 'offer') {
+      await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('voice_signal', { to: from, signal: { type: 'answer', sdp: pc.localDescription.sdp } });
+    } else if (signal.type === 'answer') {
+      if (pc.signalingState === 'have-local-offer')
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
+    } else if (signal.type === 'candidate') {
+      if (signal.candidate) await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(() => {});
+    }
+  } catch (e) { console.warn('voice signal error', e); }
   renderVoicePeers();
 }
 
-function addRemoteAudio(peerId, stream) {
-  document.getElementById('audio-'+peerId)?.remove();
-  const audio = document.createElement('audio');
-  audio.id = 'audio-'+peerId; audio.autoplay = true; audio.srcObject = stream;
-  document.body.appendChild(audio);
-  // Speaking detection for remote peer
-  try {
-    const ctx = getAudioCtx();
-    const src = ctx.createMediaStreamSource(stream);
-    const an = ctx.createAnalyser(); an.fftSize = 512;
-    src.connect(an);
-    const data = new Uint8Array(an.frequencyBinCount);
-    const check = () => {
-      an.getByteFrequencyData(data);
-      const avg = data.reduce((a,b)=>a+b,0)/data.length;
-      const speaking = avg > 15;
-      if (voicePeers[peerId]) voicePeers[peerId].speaking = speaking;
-      const dot = document.querySelector(`[data-voice="${peerId}"]`);
-      if (dot) dot.classList.toggle('speaking', speaking);
-      document.querySelectorAll(`.tok[data-pid="${peerId}"]`).forEach(t=>t.classList.toggle('speaking-ring',speaking));
-      requestAnimationFrame(check);
-    };
-    check();
-  } catch(e) {}
-}
-
 function renderVoicePeers() {
-  const wrap = document.getElementById('voice-peers');
+  const wrap  = document.getElementById('voice-peers');
   const panel = document.getElementById('vp-peers');
+  if (!wrap || !panel) return;
   wrap.innerHTML = ''; panel.innerHTML = '';
-  Object.entries(voicePeers).forEach(([pid,v])=>{
-    const d = document.createElement('div'); d.className='voice-dot'; d.dataset.voice=pid;
-    if(v.speaking) d.classList.add('speaking');
+  const count = Object.keys(voicePeers).length;
+  document.getElementById('voice-lbl').textContent = voiceActive
+    ? (voiceMuted ? '🔇 Silenciado' : `🎙️ ${count > 0 ? count + ' en llamada' : 'Activo'}`)
+    : 'Voz';
+  Object.entries(voicePeers).forEach(([pid, v]) => {
+    const d = document.createElement('div'); d.className = 'voice-dot' + (v.speaking ? ' speaking' : ''); d.dataset.voice = pid;
     wrap.appendChild(d);
-    const row = document.createElement('div'); row.className='vp-peer';
-    row.innerHTML=`<div class="vp-dot${v.speaking?' speaking':''}" data-voice="${pid}"></div> ${v.name}`;
+    const row = document.createElement('div'); row.className = 'vp-peer';
+    row.innerHTML = `<div class="vp-dot${v.speaking ? ' speaking' : ''}" data-voice="${pid}"></div> ${v.name}`;
     panel.appendChild(row);
   });
 }
@@ -1104,6 +1181,7 @@ function enterGame() {
   const gs = document.getElementById('game-screen');
   gs.classList.add('visible');
   if (!boardBuilt) { buildBoard(); boardBuilt = true; }
+  applyMobileSetup?.();
 }
 
 function buildBoard() {
@@ -1582,6 +1660,29 @@ function addLog(msg, cls='') {
 }
 
 window.addEventListener('resize',()=>{ if(G) renderBoard(); drawConnectors(); });
+
+// ═══════════════════════════════════════════════════════════════
+// MOBILE DETECTION & SETUP
+// ═══════════════════════════════════════════════════════════════
+function isMobile() { return window.innerWidth <= 700; }
+
+function applyMobileSetup() {
+  const btn = document.getElementById('sidebar-toggle');
+  if (btn) btn.style.display = isMobile() ? 'block' : 'none';
+}
+window.addEventListener('resize', applyMobileSetup);
+applyMobileSetup();
+
+// Close sidebar when tapping board on mobile
+document.getElementById('bwrap')?.addEventListener('touchstart', () => {
+  if (isMobile()) document.querySelector('.sidebar')?.classList.remove('open');
+}, { passive: true });
+
+// AudioContext unlock on first touch (iOS requirement)
+document.addEventListener('touchstart', function unlockAudio() {
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  document.removeEventListener('touchstart', unlockAudio);
+}, { once: true });
 
 // ═══════════════════════════════════════════════════════════════
 // BOOT
